@@ -409,3 +409,23 @@ class MinimizeEnergy(Callable):
 
         num_samples, num_variables = samples.shape
         return np.apply_along_axis(_minenergy, 1, samples), np.arange(num_samples)
+
+
+def expectation_value(samples, chains):
+    samples, labels = dimod.as_samples(samples)
+
+    if labels != range(len(labels)):
+        relabel = {v: idx for idx, v in enumerate(labels)}
+        chains = [[relabel[v] for v in chain] for chain in chains]
+    else:
+        chains = list(map(list, chains))  # because we use them for indexing
+
+    num_samples, num_variables = samples.shape
+    num_chains = len(chains)
+
+    expectation = np.empty((num_samples, num_chains), dtype='float', order='F')
+
+    for cidx, chain in enumerate(chains):
+        expectation[:, cidx] = samples[:, chain].sum(axis=1)/len(chain)
+
+    return expectation, np.arange(num_samples)
