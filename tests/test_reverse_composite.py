@@ -108,6 +108,61 @@ class TestReverseIsing(unittest.TestCase):
             state = [state[var] for var in variables]
             self.assertIn(state, initial_state_list)
 
+    def test_batch_no_initial_states(self):
+        sampler = ReverseBatchStatesComposite(MockReverseSampler())
+        
+        h = {0: -1., 4: 2}
+        J = {(0, 4): 1.5}
+
+        # check default generates an initial state
+        response = sampler.sample_ising(h, J)
+        self.assertIn('initial_state', response.record.dtype.names)
+
+    def test_batch_generate_more_initial_states(self):
+        sampler = ReverseBatchStatesComposite(MockReverseSampler())
+        
+        h = {0: -1., 4: 2}
+        J = {(0, 4): 1.5}
+
+        num_reads = 2
+        initial_states = [{0:1, 4:1}]
+
+        response = sampler.sample_ising(h, J, initial_states=initial_states, num_reads=num_reads)
+        self.assertGreaterEqual(len(response), 4)
+
+        response = sampler.sample_ising(h, J, initial_states=initial_states, initial_states_generator='tile', num_reads=num_reads)
+        self.assertEqual(len(response), 4)  
+
+        with self.assertRaises(ValueError):
+            response = sampler.sample_ising(h, J, initial_states=initial_states, initial_states_generator='none', num_reads=num_reads)
+
+    def test_batch_truncate_initial_states(self):
+        sampler = ReverseBatchStatesComposite(MockReverseSampler())
+        
+        h = {0: -1., 4: 2}
+        J = {(0, 4): 1.5}
+
+        num_reads = 1
+        initial_states = [{0:1, 4:1}, {0:-1, 4:1}, {0:-1, 4:-1}]
+
+        response = sampler.sample_ising(h, J, initial_states=initial_states, num_reads=num_reads)
+        self.assertEqual(len(response), 4)
+
+        response = sampler.sample_ising(h, J, initial_states=initial_states, initial_states_generator='tile', num_reads=num_reads)
+        self.assertEqual(len(response), 4)
+
+        response = sampler.sample_ising(h, J, initial_states=initial_states, initial_states_generator='none', num_reads=num_reads)
+        self.assertEqual(len(response), 4)
+
+    def test_advance_no_schedules(self):
+        sampler = ReverseAdvanceComposite(MockReverseSampler())
+
+        h = {0: -1., 4: 2}
+        J = {(0, 4): 1.5}
+
+        response = sampler.sample_ising(h, J)
+        self.assertIn('schedule_index', response.record.dtype.names)
+
     def test_advance_correct_schedules(self):
         sampler = ReverseAdvanceComposite(MockReverseSampler())
 
@@ -145,9 +200,9 @@ class TestReverseIsing(unittest.TestCase):
         vars = response.variables
         for datum in response.data(fields=['initial_state', 'schedule_index']):
             if datum.schedule_index == 0:
-                self.assertListEqual([initial[v] for v in vars], list(datum.initial_state))
-            if datum.schedule_index > 1:
-                self.assertListEqual([1, -1], list(datum.initial_state))
+                self.assertListEqual([initial[v] for v in vars], list(datum.initial_state)) # initial_state = state that was passed in
+            else:
+                self.assertListEqual([1, -1], list(datum.initial_state)) # initial_state = best state found in last schedule
 
     def test_correct_initial_state_used_reinit(self):
         sampler = ReverseAdvanceComposite(MockReverseSampler())
@@ -156,15 +211,16 @@ class TestReverseIsing(unittest.TestCase):
         J = {(0, 4): 1.5}
         anneal_schedules = [[[0, 1], [1, 0.5], [2, 0.5], [3, 1]], [[0, 1], [1, 0.5], [2, 0.5], [3, 1]]]
         initial = {0: -1, 4: -1}
+
         response = sampler.sample_ising(h, J, anneal_schedules=anneal_schedules,
                                         initial_state=initial, reinitialize_state=False)
 
         vars = response.variables
-        for datum in response.data(fields=['initial_state', 'schedule_index']):
-            if datum.schedule_index == 0:
-                self.assertListEqual([initial[v] for v in vars], list(datum.initial_state))
-            if datum.schedule_index > 1:
-                self.assertListEqual([-1, 1], list(datum.initial_state))
+
+        init = [initial[v] for v in vars]  
+        for datum in response.data(fields=['sample', 'initial_state'], sorted_by=None):
+            self.assertListEqual(init, list(datum.initial_state))
+            init = [datum.sample[v] for v in vars]  # sample should be the initial state of the next sample
 
     def test_combination(self):
         sampler = ReverseBatchStatesComposite(ReverseAdvanceComposite(MockReverseSampler()))

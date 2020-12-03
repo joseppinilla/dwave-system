@@ -84,17 +84,21 @@ class ReverseAdvanceComposite(dimod.ComposedSampler):
         return {'child_properties': self.child.properties.copy()}
 
     def sample(self, bqm, anneal_schedules=None, **parameters):
-        """Sample the binary quadratic model using reverse annealing along a given set of anneal schedules.
+        """Sample the binary quadratic model using reverse annealing along a given set 
+        of anneal schedules.
 
         Args:
             bqm (:obj:`dimod.BinaryQuadraticModel`):
                 Binary quadratic model to be sampled from.
 
-            anneal_schedules (list of lists): Anneal schedules in order of submission. Each schedule is
-                formatted as a list of [time, s] pairs
+            anneal_schedules (list of lists, optional, default=[[[0, 1], [1, 0.35], [9, 0.35], [10, 1]]]): 
+                Anneal schedules in order of submission. Each schedule is formatted 
+                as a list of [time, s] pairs, in which time is in microseconds and s 
+                is the normalized persistent current in the range [0,1].
 
-            initial_state (dict, optional): the state to reverse anneal from. If not provided, it will
-                be randomly generated
+            initial_state (dict, optional): 
+                The state to reverse anneal from. If not provided, it will
+                be randomly generated.
 
             **parameters:
                 Parameters for the sampling method, specified by the child sampler.
@@ -128,7 +132,7 @@ class ReverseAdvanceComposite(dimod.ComposedSampler):
         child = self.child
 
         if anneal_schedules is None:
-            return child.sample(bqm, **parameters)
+            anneal_schedules = [[[0, 1], [1, 0.35], [9, 0.35], [10, 1]]]    
 
         vartype_values = list(bqm.vartype.value)
         if 'initial_state' not in parameters:
@@ -145,16 +149,34 @@ class ReverseAdvanceComposite(dimod.ComposedSampler):
             if "answer_mode" in child.parameters:
                 parameters['answer_mode'] = 'histogram'
 
-        vectors = {}
+        samplesets = None
         for schedule_idx, anneal_schedule in enumerate(anneal_schedules):
             sampleset = child.sample(bqm, anneal_schedule=anneal_schedule, initial_state=initial_state,
                                      **parameters)
 
-            # update vectors
             initial_state, _ = dimod.as_samples(initial_state)
-            vectors = _update_data_vector(vectors, sampleset,
-                                          {'initial_state': [initial_state[0]] * len(sampleset.record.energy),
-                                           'schedule_index': [schedule_idx] * len(sampleset.record.energy)})
+
+            if 'initial_state' not in sampleset.record.dtype.names:
+                init_state_vect = []
+
+                if parameters['reinitialize_state']:
+                    init_state_vect = [initial_state[0].copy() for i in range(len(sampleset.record.energy))]
+                else:
+                    # each sample is the next sample's initial state
+                    init_state_vect.append(initial_state[0].copy())
+                    for sample in sampleset.record.sample[:-1]:
+                        init_state_vect.append(sample)
+
+                sampleset = dimod.append_data_vectors(sampleset, initial_state=init_state_vect)
+        
+            if 'schedule_index' not in sampleset.record.dtype.names:
+                schedule_index_vect = [schedule_idx] * len(sampleset.record.energy)
+                sampleset = dimod.append_data_vectors(sampleset, schedule_index=schedule_index_vect)
+
+            if samplesets is None:
+                samplesets = sampleset
+            else:
+                samplesets = dimod.concatenate((samplesets, sampleset))
 
             if schedule_idx+1 == len(anneal_schedules):
                 # no need to create the next initial state - last iteration
@@ -171,14 +193,11 @@ class ReverseAdvanceComposite(dimod.ComposedSampler):
                 # if not reinitialized, take the last state as the next initial state
                 initial_state = dict(zip(sampleset.variables, sampleset.record.sample[-1]))
 
-        samples = vectors.pop('sample')
-        return dimod.SampleSet.from_samples((samples, bqm.variables),
-                                            bqm.vartype,
-                                            info={'anneal_schedules': anneal_schedules},
-                                            **vectors)
+        samplesets.info['anneal_schedules'] = anneal_schedules
+        return samplesets
 
 
-class ReverseBatchStatesComposite(dimod.ComposedSampler):
+class ReverseBatchStatesComposite(dimod.ComposedSampler, dimod.Initialized):
     """Composite that reverse anneals from multiple initial samples. Each submission is independent
     from one another.
 
@@ -228,12 +247,46 @@ class ReverseBatchStatesComposite(dimod.ComposedSampler):
     def properties(self):
         return {'child_properties': self.child.properties.copy()}
 
-    def sample(self, bqm, **parameters):
+    def sample(self, bqm, initial_states=None, initial_states_generator='random', num_reads=None, 
+               seed=None, **parameters):
         """Sample the binary quadratic model using reverse annealing from multiple initial states.
 
         Args:
             bqm (:obj:`dimod.BinaryQuadraticModel`):
                 Binary quadratic model to be sampled from.
+
+            initial_states (samples-like, optional, default=None):
+                One or more samples, each defining an initial state for all the problem variables. 
+                If fewer than `num_reads` initial states are defined, additional values are 
+                generated as specified by `initial_states_generator`. See :func:`dimod.as_samples` 
+                for a description of "samples-like".
+
+            initial_states_generator ({'none', 'tile', 'random'}, optional, default='random'):
+                Defines the expansion of `initial_states` if fewer than
+                `num_reads` are specified:
+
+                * "none":
+                    If the number of initial states specified is smaller than
+                    `num_reads`, raises ValueError.
+
+                * "tile":
+                    Reuses the specified initial states if fewer than `num_reads`
+                    or truncates if greater.
+
+                * "random":
+                    Expands the specified initial states with randomly generated
+                    states if fewer than `num_reads` or truncates if greater.
+
+            num_reads (int, optional, default=len(initial_states) or 1):
+                Equivalent to number of desired initial states. If greater than the number of 
+                provided initial states, additional states will be generated. If not provided, 
+                it is selected to match the length of `initial_states`. If `initial_states` 
+                is not provided, `num_reads` defaults to 1.
+
+            seed (int (32-bit unsigned integer), optional):
+                Seed to use for the PRNG. Specifying a particular seed with a
+                constant set of parameters produces identical results. If not
+                provided, a random seed is chosen.
 
             **parameters:
                 Parameters for the sampling method, specified by the child sampler.
@@ -265,49 +318,37 @@ class ReverseBatchStatesComposite(dimod.ComposedSampler):
 
         """
         child = self.child
-
-        if 'initial_states' not in parameters:
-            return child.sample(bqm, **parameters)
-
-        initial_states = parameters.pop('initial_states')
+        
+        parsed = self.parse_initial_states(bqm, 
+                                           initial_states=initial_states,
+                                           initial_states_generator=initial_states_generator,
+                                           num_reads=num_reads,
+                                           seed=seed)
+        
+        parsed_initial_states = np.ascontiguousarray(parsed.initial_states.record.sample)
 
         # there is gonna be way too much data generated - better to histogram them if possible
-        if "answer_mode" in child.parameters:
+        if 'answer_mode' in child.parameters:
             parameters['answer_mode'] = 'histogram'
 
-        # prepare data fields for the new sampleset object
+        # reduce number of network calls if possible by aggregating init states
+        if 'num_reads' in child.parameters:
+            aggreg = parsed.initial_states.aggregate()
+            parsed_initial_states = np.ascontiguousarray(aggreg.record.sample)
+            parameters['num_reads'] = aggreg.record.num_occurrences
 
-        vectors = {}
-        for initial_state in initial_states:
+        samplesets = None
+        
+        for initial_state in parsed_initial_states:
+            sampleset = child.sample(bqm, initial_state=dict(zip(bqm.variables, initial_state)), **parameters)
 
-            if not isinstance(initial_state, dict):
-                initial_state = dict(zip(bqm.variables, initial_state))
+            if 'initial_state' not in sampleset.record.dtype.names:
+                init_state_vect = [initial_state.copy() for i in range(len(sampleset.record.energy))]
+                sampleset = dimod.append_data_vectors(sampleset, initial_state=init_state_vect)
 
-            sampleset = child.sample(bqm, initial_state=initial_state, **parameters)
-            initial_state_, _ = dimod.as_samples(initial_state)
-            vectors = _update_data_vector(vectors, sampleset,
-                                          {'initial_state': [initial_state_[0]] * len(sampleset.record.energy)})
+            if samplesets is None:
+                samplesets = sampleset
+            else:
+                samplesets = dimod.concatenate((samplesets, sampleset))
 
-        samples = vectors.pop('sample')
-
-        return dimod.SampleSet.from_samples((samples, bqm.variables),
-                                            bqm.vartype,
-                                            info={},
-                                            **vectors)
-
-
-def _update_data_vector(vectors, sampleset, additional_parameters=None):
-    var_names = sampleset.record.dtype.names
-    for name in var_names:
-        try:
-            vectors[name] = vectors[name] + list(sampleset.record[name])
-        except KeyError:
-            vectors[name] = list(sampleset.record[name])
-
-    for key, val in additional_parameters.items():
-        if key not in var_names:
-            try:
-                vectors[key] = vectors[key] + list(val)
-            except KeyError:
-                vectors[key] = list(val)
-    return vectors
+        return samplesets

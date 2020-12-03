@@ -36,10 +36,16 @@ class LeapHybridSampler(dimod.Sampler):
     Leap’s quantum-classical hybrid BQM solvers are intended to solve arbitrary
     application problems formulated as binary quadratic models (BQM).
 
-    Uses parameters set in a configuration file, as environment variables, or
-    explicitly as input arguments for selecting and communicating with a hybrid
-    solver. For more information, see
+    You can configure your :term:`solver` selection and usage by setting parameters,
+    hierarchically, in a configuration file, as environment variables, or
+    explicitly as input arguments, as described in
     `D-Wave Cloud Client <https://docs.ocean.dwavesys.com/en/stable/docs_cloud/sdk_index.html>`_.
+
+    :ref:`dwave-cloud-client <sdk_index_cloud>`'s
+    :meth:`~dwave.cloud.client.Client.get_solvers` method filters solvers you have
+    access to by `solver properties <https://docs.dwavesys.com/docs/latest/c_solver_3.html>`_
+    ``category=hybrid`` and ``supported_problem_type=bqm``. By default, online
+    hybrid BQM solvers are returned ordered by latest ``version``.
 
     Inherits from :class:`dimod.Sampler`.
 
@@ -256,10 +262,16 @@ class LeapHybridDQMSampler:
     Leap’s quantum-classical hybrid DQM solvers are intended to solve arbitrary
     application problems formulated as **discrete** quadratic models (DQM).
 
-    Uses parameters set in a configuration file, as environment variables, or
-    explicitly as input arguments for selecting and communicating with a hybrid
-    solver. For more information, see
+    You can configure your :term:`solver` selection and usage by setting parameters,
+    hierarchically, in a configuration file, as environment variables, or
+    explicitly as input arguments, as described in
     `D-Wave Cloud Client <https://docs.ocean.dwavesys.com/en/stable/docs_cloud/sdk_index.html>`_.
+
+    :ref:`dwave-cloud-client <sdk_index_cloud>`'s
+    :meth:`~dwave.cloud.client.Client.get_solvers` method filters solvers you have
+    access to by `solver properties <https://docs.dwavesys.com/docs/latest/c_solver_3.html>`_
+    ``category=hybrid`` and ``supported_problem_type=dqm``. By default, online
+    hybrid DQM solvers are returned ordered by latest ``version``.
 
     Args:
         **config:
@@ -280,12 +292,11 @@ class LeapHybridDQMSampler:
         >>> cases = ["rock", "paper", "scissors"]
         >>> win = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
         ...
-        >>> dqm_sampler = LeapHybridDQMSampler()      # doctest: +SKIP
-        ...
         >>> dqm = dimod.DiscreteQuadraticModel()
         >>> dqm.add_variable(3, label='my_hand')
+        'my_hand'
         >>> dqm.add_variable(3, label='their_hand')
-        ...
+        'their_hand'
         >>> for my_idx, my_case in enumerate(cases):
         ...    for their_idx, their_case in enumerate(cases):
         ...       if win[my_case] == their_case:
@@ -295,7 +306,9 @@ class LeapHybridDQMSampler:
         ...          dqm.set_quadratic('my_hand', 'their_hand',
         ...                            {(my_idx, their_idx): 1})
         ...
-        >>> sampleset = dqm_sampler.sample_dqm(dqm)         # doctest: +SKIP
+        >>> dqm_sampler = LeapHybridDQMSampler()      # doctest: +SKIP
+        ...
+        >>> sampleset = dqm_sampler.sample_dqm(dqm)   # doctest: +SKIP
         >>> print("{} beats {}".format(cases[sampleset.first.sample['my_hand']],
         ...                            cases[sampleset.first.sample['their_hand']]))   # doctest: +SKIP
         rock beats scissors
@@ -365,7 +378,7 @@ class LeapHybridDQMSampler:
             self._parameters = parameters
             return parameters
 
-    def sample_dqm(self, dqm, time_limit=None, compressed=False, **kwargs):
+    def sample_dqm(self, dqm, time_limit=None, compress=False, compressed=None, **kwargs):
         """Sample from the specified discrete quadratic model.
 
         Args:
@@ -380,8 +393,16 @@ class LeapHybridDQMSampler:
                 :meth:`~dwave.system.samplers.LeapHybridDQMSampler.min_time_limit`
                 calculates (and describes) the minimum time for your problem.
 
+            compress (binary, optional):
+                Compresses the DQM data when set to True. Use if your problem
+                somewhat exceeds the maximum allowed size. Compression tends to
+                be slow and more effective on homogenous data, which in this
+                case means it is more likely to help on DQMs with many identical
+                integer-valued biases than ones with random float-valued biases,
+                for example.
+
             compressed (binary, optional):
-                Compresses the DQM data when set to True.
+                Deprecated; please use ``compress`` instead.
 
             **kwargs:
                 Optional keyword arguments for the solver, specified in
@@ -396,6 +417,9 @@ class LeapHybridDQMSampler:
         """
         if time_limit is None:
             time_limit = self.min_time_limit(dqm)
+        elif time_limit < self.min_time_limit(dqm):
+            raise ValueError("the minimum time limit is {}s ({}s provided)"
+                             "".format(self.min_time_limit(dqm), time_limit))
 
         # check the max time_limit if it's available
         if 'maximum_time_limit_hrs' in self.properties:
@@ -410,7 +434,16 @@ class LeapHybridDQMSampler:
         # note: SpooledTemporaryFile currently returned by DQM.to_file
         # does not implement io.BaseIO interface, so we use the underlying
         # (and internal) file-like object for now
-        f = dqm.to_file(compressed=compressed, ignore_labels=True)._file
+
+        if compressed is not None:
+            warn(
+                "Argument 'compressed' is deprecated and in future will raise an "
+                "exception; please use 'compress' instead.",
+                DeprecationWarning, stacklevel=2
+                )
+            compress = compressed or compress
+
+        f = dqm.to_file(compress=compress, ignore_labels=True)._file
         sampleset = self.solver.sample_dqm(f, time_limit=time_limit, **kwargs).sampleset
         return sampleset.relabel_variables(dict(enumerate(dqm.variables)))
 
